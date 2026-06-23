@@ -43,7 +43,7 @@ Get one from [Google AI Studio](https://aistudio.google.com/).
 ### Local Setup
 ```bash
 git clone <this-repo>
-cd github-social-bot
+cd pitcher
 npm install
 ```
 
@@ -55,7 +55,7 @@ npm run install-global
 
 Once installed globally, you can invoke the CLI with:
 ```bash
-github-social-bot [command]
+pitcher [command]
 ```
 
 To remove the global installation:
