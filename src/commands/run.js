@@ -7,6 +7,7 @@ import {
   loadConfig,
   saveConfig,
   getAccount,
+  saveAccount,
   getRepository,
   getLastUsed,
   setLastUsed,
@@ -16,7 +17,7 @@ import {
 import { getLocalCommits, getRemoteCommits } from '../github.js';
 import { analyzeCommitsAndGeneratePost } from '../gemini.js';
 import { publishToTwitter } from '../twitter.js';
-import { publishToBluesky } from '../bluesky.js';
+import { publishToBluesky, refreshBlueskySession } from '../bluesky.js';
 import { pickAccount, pickRepository } from '../helpers.js';
 
 /**
@@ -30,6 +31,7 @@ export function registerRun(program) {
     .option('--repo <name>',    'Repository name to use (skips repo prompt)')
     .option('--yes',            'Skip confirmation and post immediately')
     .option('--limit <number>', 'Number of commits to analyze', '15')
+    .option('--instruction <text>', 'Additional instruction to pass to Gemini AI', '')
     .action(async (options) => {
       let config = loadConfig();
       const lastUsed = getLastUsed(config);
@@ -102,62 +104,140 @@ export function registerRun(program) {
       }
       spinner.succeed(`Scraped ${commits.length} commits.`);
 
-      // ── Gemini analysis ───────────────────────────────────────────────────
-      spinner.start(`Running Gemini AI (${geminiModel})...`);
+      // ── Gemini analysis loop ──────────────────────────────────────────────
+      let additionalInstruction = options.instruction || '';
       let analysis;
-      try {
-        analysis = await analyzeCommitsAndGeneratePost(commits, geminiKey, geminiModel);
-      } catch (err) {
-        spinner.fail(`Gemini analysis failed: ${err.message}`);
-        process.exit(1);
-      }
-      spinner.succeed('Gemini analysis complete.');
+      let postContent = '';
 
-      console.log('\n' + boxen(
-        `${picocolors.cyan(picocolors.bold('Category:'))} ${analysis.category}\n` +
-        `${picocolors.cyan(picocolors.bold('AI Quality Score:'))} ${analysis.score}/5\n` +
-        `${picocolors.cyan(picocolors.bold('Explanation:'))} ${analysis.explanation}`,
-        { title: 'Gemini Analysis Summary', titleAlignment: 'left', padding: 1, borderColor: 'cyan', margin: 1 }
-      ));
+      while (true) {
+        spinner.start(`Running Gemini AI (${geminiModel})...`);
+        try {
+          analysis = await analyzeCommitsAndGeneratePost(commits, geminiKey, geminiModel, additionalInstruction);
+          postContent = analysis.linkedinPost;
+        } catch (err) {
+          spinner.fail(`Gemini analysis failed: ${err.message}`);
+          process.exit(1);
+        }
+        spinner.succeed('Gemini analysis complete.');
 
-      if (analysis.score < 4 && !options.yes) {
-        console.log(picocolors.yellow(`⚠ Post quality score is low (${analysis.score}/5). Exiting without posting.`));
-        process.exit(0);
-      }
+        console.log('\n' + boxen(
+          `${picocolors.cyan(picocolors.bold('Category:'))} ${analysis.category}\n` +
+          `${picocolors.cyan(picocolors.bold('AI Quality Score:'))} ${analysis.score}/5\n` +
+          `${picocolors.cyan(picocolors.bold('Explanation:'))} ${analysis.explanation}`,
+          { title: 'Gemini Analysis Summary', titleAlignment: 'left', padding: 1, borderColor: 'cyan', margin: 1 }
+        ));
 
-      console.log(boxen(
-        analysis.linkedinPost,
-        { title: 'Post Preview', titleAlignment: 'left', padding: 1, borderColor: 'green', margin: 1 }
-      ));
+        if (analysis.score < 4 && !options.yes) {
+          console.log(picocolors.yellow(`⚠ Post quality score is low (${analysis.score}/5).`));
+        }
 
-      let confirm = options.yes;
-      if (!confirm) {
-        const res = await prompts({
-          type: 'confirm',
+        console.log(boxen(
+          postContent,
+          { title: 'Post Preview', titleAlignment: 'left', padding: 1, borderColor: 'green', margin: 1 }
+        ));
+
+        if (options.yes) {
+          break; // Publish immediately in non-interactive / CI modes
+        }
+
+        const actionRes = await prompts({
+          type: 'select',
           name: 'value',
-          message: 'Post this?',
-          initial: false
+          message: 'What would you like to do with this post?',
+          choices: [
+            { title: '🚀 Publish now', value: 'publish' },
+            { title: '✍  Edit post manually', value: 'edit' },
+            { title: '🔄 Regenerate with additional instructions', value: 'regenerate' },
+            { title: '❌ Cancel and exit', value: 'cancel' }
+          ],
+          initial: 0
         });
-        confirm = res.value;
-      }
 
-      if (!confirm) {
-        console.log(picocolors.yellow('Post cancelled.'));
-        process.exit(0);
+        if (!actionRes.value || actionRes.value === 'cancel') {
+          console.log(picocolors.yellow('Post cancelled.'));
+          process.exit(0);
+        }
+
+        if (actionRes.value === 'publish') {
+          break;
+        }
+
+        if (actionRes.value === 'edit') {
+          const editRes = await prompts({
+            type: 'text',
+            name: 'content',
+            message: 'Edit the post content:',
+            initial: postContent
+          });
+          if (editRes.content) {
+            postContent = editRes.content;
+            console.log(picocolors.green('✔ Post updated!'));
+            const reconfirm = await prompts({
+              type: 'confirm',
+              name: 'value',
+              message: 'Publish this edited version?',
+              initial: true
+            });
+            if (reconfirm.value) {
+              break;
+            }
+          }
+        }
+
+        if (actionRes.value === 'regenerate') {
+          const instructionRes = await prompts({
+            type: 'text',
+            name: 'prompt',
+            message: 'Provide additional instructions for Gemini (e.g. "make it punchier", "focus on feature X"):',
+            validate: v => v ? true : 'Required.'
+          });
+          if (instructionRes.prompt) {
+            additionalInstruction = (additionalInstruction ? additionalInstruction + '\n' : '') + instructionRes.prompt;
+          }
+        }
       }
 
       // ── Publish ───────────────────────────────────────────────────────────
       const platform = account.platform || 'twitter';
 
       if (platform === 'bluesky') {
-        const { accessJwt, did } = account.bluesky || {};
+        const { accessJwt, refreshJwt, did } = account.bluesky || {};
         if (!accessJwt || !did) {
           console.error(picocolors.red(`✗ Account "${account.name}" is not linked to Bluesky. Run "login ${account.name}" first.`));
           process.exit(1);
         }
         spinner.start('Publishing to Bluesky...');
+        let finalAccessJwt = accessJwt;
         try {
-          const postUri = await publishToBluesky(accessJwt, did, analysis.linkedinPost);
+          let postUri;
+          try {
+            postUri = await publishToBluesky(finalAccessJwt, did, postContent);
+          } catch (firstErr) {
+            // Check if error is token expiration
+            if (firstErr.message.includes('ExpiredToken') && refreshJwt) {
+              spinner.text = 'Token expired. Refreshing Bluesky session...';
+              const session = await refreshBlueskySession(refreshJwt);
+              finalAccessJwt = session.accessJwt;
+
+              // Save the refreshed tokens back to configuration
+              config = loadConfig();
+              const updatedAccount = {
+                ...account,
+                bluesky: {
+                  ...account.bluesky,
+                  accessJwt: session.accessJwt,
+                  refreshJwt: session.refreshJwt
+                }
+              };
+              saveConfig(saveAccount(config, updatedAccount));
+
+              spinner.text = 'Retrying publishing to Bluesky...';
+              postUri = await publishToBluesky(finalAccessJwt, did, postContent);
+            } else {
+              throw firstErr;
+            }
+          }
+
           spinner.succeed(picocolors.green(`✔ Posted to Bluesky! URI: ${postUri}`));
           addHistoryEntry({
             account: account.name,
@@ -166,7 +246,7 @@ export function registerRun(program) {
             postUri,
             category: analysis.category,
             score: analysis.score,
-            content: analysis.linkedinPost
+            content: postContent
           });
         } catch (err) {
           spinner.fail(`Publication failed: ${err.message}`);
@@ -180,7 +260,7 @@ export function registerRun(program) {
         }
         spinner.start('Publishing to Twitter (X)...');
         try {
-          const tweetId = await publishToTwitter(accessToken, analysis.linkedinPost);
+          const tweetId = await publishToTwitter(accessToken, postContent);
           spinner.succeed(picocolors.green(`✔ Tweeted! Tweet ID: ${tweetId}`));
           addHistoryEntry({
             account: account.name,
@@ -189,7 +269,7 @@ export function registerRun(program) {
             tweetId,
             category: analysis.category,
             score: analysis.score,
-            content: analysis.linkedinPost
+            content: postContent
           });
         } catch (err) {
           spinner.fail(`Publication failed: ${err.message}`);

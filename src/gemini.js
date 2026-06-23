@@ -1,6 +1,6 @@
 import { GoogleGenAI } from '@google/genai';
 
-export async function analyzeCommitsAndGeneratePost(commits, apiKey, model = 'gemini-2.5-flash') {
+export async function analyzeCommitsAndGeneratePost(commits, apiKey, model = 'gemini-2.5-flash', additionalInstruction = '') {
   if (!apiKey) {
     throw new Error('Gemini API Key is not configured.');
   }
@@ -9,7 +9,7 @@ export async function analyzeCommitsAndGeneratePost(commits, apiKey, model = 'ge
 
   const commitsText = commits.map(c => `- [${c.date}] (${c.hash}) ${c.message}`).join('\n');
 
-  const systemInstructions = `
+  let systemInstructions = `
 You are an expert developer relations (DevRel) and tech content creator.
 Your task is to analyze a list of recent git commit messages, determine if there is anything of substance (features, bug fixes, major refactors, optimizations), and if so, write an engaging LinkedIn post.
 
@@ -29,6 +29,10 @@ Rules:
 3. If the score is less than 4, still generate a potential post (in case the user wants to post it anyway) but keep the score low.
 4. Output MUST be valid JSON adhering strictly to the schema provided.
 `;
+
+  if (additionalInstruction) {
+    systemInstructions += `\nCRITICAL: You MUST also follow these additional instructions from the user:\n${additionalInstruction}\n`;
+  }
 
   const prompt = `
 Analyze the following commits:

@@ -10,12 +10,36 @@ const MAX_GRAPHEMES = 295; // leave 5 chars buffer below the 300 limit
  * Returns session data: { accessJwt, refreshJwt, did, handle }
  */
 export async function loginBluesky(identifier, appPassword) {
-  const res = await axios.post(`${BSKY_API}/com.atproto.server.createSession`, {
-    identifier,
-    password: appPassword
-  });
-  const { accessJwt, refreshJwt, did, handle } = res.data;
-  return { accessJwt, refreshJwt, did, handle };
+  try {
+    const res = await axios.post(`${BSKY_API}/com.atproto.server.createSession`, {
+      identifier,
+      password: appPassword
+    });
+    const { accessJwt, refreshJwt, did, handle } = res.data;
+    return { accessJwt, refreshJwt, did, handle };
+  } catch (err) {
+    const errorMsg = err.response?.data ? JSON.stringify(err.response.data) : err.message;
+    throw new Error(`Failed to login to Bluesky: ${errorMsg}`);
+  }
+}
+
+/**
+ * Refresh Bluesky session using refresh token.
+ * Returns updated session data.
+ */
+export async function refreshBlueskySession(refreshJwt) {
+  try {
+    const res = await axios.post(`${BSKY_API}/com.atproto.server.refreshSession`, {}, {
+      headers: {
+        Authorization: `Bearer ${refreshJwt}`
+      }
+    });
+    const { accessJwt, refreshJwt: newRefreshJwt, did, handle } = res.data;
+    return { accessJwt, refreshJwt: newRefreshJwt, did, handle };
+  } catch (err) {
+    const errorMsg = err.response?.data ? JSON.stringify(err.response.data) : err.message;
+    throw new Error(`Failed to refresh Bluesky session: ${errorMsg}`);
+  }
 }
 
 // ─── Grapheme counting ────────────────────────────────────────────────────────
@@ -119,27 +143,32 @@ export async function publishToBluesky(accessJwt, did, text) {
       };
     }
 
-    const res = await axios.post(
-      `${BSKY_API}/com.atproto.repo.createRecord`,
-      {
-        repo: did,
-        collection: 'app.bsky.feed.post',
-        record
-      },
-      {
-        headers: {
-          Authorization: `Bearer ${accessJwt}`,
-          'Content-Type': 'application/json'
+    try {
+      const res = await axios.post(
+        `${BSKY_API}/com.atproto.repo.createRecord`,
+        {
+          repo: did,
+          collection: 'app.bsky.feed.post',
+          record
+        },
+        {
+          headers: {
+            Authorization: `Bearer ${accessJwt}`,
+            'Content-Type': 'application/json'
+          }
         }
-      }
-    );
+      );
 
-    const { uri, cid } = res.data;
-    if (i === 0) {
-      firstUri = uri;
-      rootRef = { uri, cid };
+      const { uri, cid } = res.data;
+      if (i === 0) {
+        firstUri = uri;
+        rootRef = { uri, cid };
+      }
+      parentRef = { uri, cid };
+    } catch (err) {
+      const errorMsg = err.response?.data ? JSON.stringify(err.response.data) : err.message;
+      throw new Error(`Failed to create post record (chunk ${i + 1}/${chunks.length}): ${errorMsg}`);
     }
-    parentRef = { uri, cid };
   }
 
   return firstUri;
@@ -154,22 +183,27 @@ export async function publishToBluesky(accessJwt, did, text) {
  * @param {string} uri - The AT URI of the post (at://did.../app.bsky.feed.post/rkey)
  */
 export async function deleteBlueskyPost(accessJwt, did, uri) {
-  // Extract the rkey from the URI: at://did/collection/rkey
-  const parts = uri.split('/');
-  const rkey = parts[parts.length - 1];
+  try {
+    // Extract the rkey from the URI: at://did/collection/rkey
+    const parts = uri.split('/');
+    const rkey = parts[parts.length - 1];
 
-  await axios.post(
-    `${BSKY_API}/com.atproto.repo.deleteRecord`,
-    {
-      repo: did,
-      collection: 'app.bsky.feed.post',
-      rkey
-    },
-    {
-      headers: {
-        Authorization: `Bearer ${accessJwt}`,
-        'Content-Type': 'application/json'
+    await axios.post(
+      `${BSKY_API}/com.atproto.repo.deleteRecord`,
+      {
+        repo: did,
+        collection: 'app.bsky.feed.post',
+        rkey
+      },
+      {
+        headers: {
+          Authorization: `Bearer ${accessJwt}`,
+          'Content-Type': 'application/json'
+        }
       }
-    }
-  );
+    );
+  } catch (err) {
+    const errorMsg = err.response?.data ? JSON.stringify(err.response.data) : err.message;
+    throw new Error(`Failed to delete Bluesky post: ${errorMsg}`);
+  }
 }
