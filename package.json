@@ -1,17 +1,17 @@
 {
-  "name": "github-social-bot",
+  "name": "pitcher",
   "version": "2.0.0",
   "description": "CLI tool to automatically generate and post social media updates (Twitter/X and Bluesky) from Git commits using Gemini AI",
   "main": "src/index.js",
   "type": "module",
   "bin": {
-    "github-social-bot": "./src/index.js"
+    "pitcher": "./src/index.js"
   },
   "scripts": {
     "start": "node src/index.js",
     "test": "node --test",
     "install-global": "npm install -g .",
-    "uninstall-global": "npm uninstall -g github-social-bot"
+    "uninstall-global": "npm uninstall -g pitcher"
   },
   "dependencies": {
     "@google/genai": "^0.2.0",
