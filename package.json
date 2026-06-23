@@ -1,0 +1,27 @@
+{
+  "name": "github-social-bot",
+  "version": "2.0.0",
+  "description": "CLI tool to automatically generate and post social media updates (Twitter/X and Bluesky) from Git commits using Gemini AI",
+  "main": "src/index.js",
+  "type": "module",
+  "bin": {
+    "github-social-bot": "./src/index.js"
+  },
+  "scripts": {
+    "start": "node src/index.js",
+    "test": "node --test",
+    "install-global": "npm install -g .",
+    "uninstall-global": "npm uninstall -g github-social-bot"
+  },
+  "dependencies": {
+    "@google/genai": "^0.2.0",
+    "axios": "^1.7.2",
+    "boxen": "^8.0.1",
+    "commander": "^12.1.0",
+    "dotenv": "^16.4.5",
+    "express": "^4.19.2",
+    "ora": "^8.0.1",
+    "picocolors": "^1.0.1",
+    "prompts": "^2.4.2"
+  }
+}

@@ -1,0 +1,141 @@
+name: 'GitHub Social Bot'
+description: 'Analyzes git commits using Gemini AI and publishes updates to Twitter (X) or Bluesky.'
+
+inputs:
+  gemini_api_key:
+    description: 'Gemini API Key'
+    required: true
+  platform:
+    description: 'Target social platform: "twitter" or "bluesky"'
+    required: false
+    default: 'twitter'
+  # ── Twitter inputs ────────────────────────────────────────────────────────
+  twitter_access_token:
+    description: 'Twitter OAuth 2.0 Access Token (required when platform=twitter)'
+    required: false
+    default: ''
+  twitter_user_id:
+    description: 'Twitter User ID (required when platform=twitter)'
+    required: false
+    default: ''
+  # ── Bluesky inputs ────────────────────────────────────────────────────────
+  bluesky_identifier:
+    description: 'Bluesky handle, e.g. yourname.bsky.social (required when platform=bluesky)'
+    required: false
+    default: ''
+  bluesky_app_password:
+    description: 'Bluesky App Password (required when platform=bluesky)'
+    required: false
+    default: ''
+  # ── Common inputs ─────────────────────────────────────────────────────────
+  limit:
+    description: 'Number of commits to analyze'
+    required: false
+    default: '15'
+  github_token:
+    description: 'GitHub PAT for remote repo scraping (defaults to github.token)'
+    required: false
+    default: '${{ github.token }}'
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Set up Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '20'
+
+    - name: Install dependencies
+      shell: bash
+      run: npm ci --prefix ${{ github.action_path }}
+
+    - name: Build config for GitHub Actions (Twitter)
+      if: ${{ inputs.platform == 'twitter' }}
+      shell: bash
+      run: |
+        mkdir -p ~/.github-twitter-bot
+        cat <<EOF > ~/.github-twitter-bot/config.json
+        {
+          "global": {
+            "twitter": { "clientId": "", "clientSecret": "" },
+            "geminiApiKey": "${{ inputs.gemini_api_key }}"
+          },
+          "accounts": {
+            "github-action": {
+              "name": "github-action",
+              "platform": "twitter",
+              "twitter": {
+                "accessToken": "${{ inputs.twitter_access_token }}",
+                "userId": "${{ inputs.twitter_user_id }}",
+                "username": ""
+              },
+              "bluesky": { "identifier": "", "accessJwt": "", "refreshJwt": "", "did": "", "handle": "" },
+              "geminiApiKey": "",
+              "geminiModel": "gemini-2.5-flash",
+              "repositories": {
+                "default": {
+                  "name": "default",
+                  "github": { "type": "local", "repoPath": "$GITHUB_WORKSPACE", "owner": "", "repo": "", "token": "" }
+                }
+              }
+            }
+          },
+          "lastUsed": { "account": "github-action", "repository": "default" }
+        }
+        EOF
+
+    - name: Build config for GitHub Actions (Bluesky)
+      if: ${{ inputs.platform == 'bluesky' }}
+      shell: bash
+      run: |
+        mkdir -p ~/.github-twitter-bot
+        # Authenticate with Bluesky to get JWT
+        BSKY_SESSION=$(curl -s -X POST https://bsky.social/xrpc/com.atproto.server.createSession \
+          -H "Content-Type: application/json" \
+          -d "{\"identifier\": \"${{ inputs.bluesky_identifier }}\", \"password\": \"${{ inputs.bluesky_app_password }}\"}")
+        BSKY_JWT=$(echo $BSKY_SESSION | node -e "let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>console.log(JSON.parse(d).accessJwt))")
+        BSKY_DID=$(echo $BSKY_SESSION | node -e "let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>console.log(JSON.parse(d).did))")
+        BSKY_HANDLE=$(echo $BSKY_SESSION | node -e "let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>console.log(JSON.parse(d).handle))")
+        cat <<EOF > ~/.github-twitter-bot/config.json
+        {
+          "global": {
+            "twitter": { "clientId": "", "clientSecret": "" },
+            "geminiApiKey": "${{ inputs.gemini_api_key }}"
+          },
+          "accounts": {
+            "github-action": {
+              "name": "github-action",
+              "platform": "bluesky",
+              "twitter": { "accessToken": "", "userId": "", "username": "" },
+              "bluesky": {
+                "identifier": "${{ inputs.bluesky_identifier }}",
+                "accessJwt": "$BSKY_JWT",
+                "refreshJwt": "",
+                "did": "$BSKY_DID",
+                "handle": "$BSKY_HANDLE"
+              },
+              "geminiApiKey": "",
+              "geminiModel": "gemini-2.5-flash",
+              "repositories": {
+                "default": {
+                  "name": "default",
+                  "github": { "type": "local", "repoPath": "$GITHUB_WORKSPACE", "owner": "", "repo": "", "token": "" }
+                }
+              }
+            }
+          },
+          "lastUsed": { "account": "github-action", "repository": "default" }
+        }
+        EOF
+
+    - name: Run GitHub Social Bot
+      shell: bash
+      env:
+        GEMINI_API_KEY: ${{ inputs.gemini_api_key }}
+        GITHUB_TOKEN: ${{ inputs.github_token }}
+      run: |
+        node ${{ github.action_path }}/src/index.js run \
+          --account github-action \
+          --repo default \
+          --yes \
+          --limit ${{ inputs.limit }}
